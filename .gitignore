@@ -11,3 +11,7 @@ Cargo.lock.backup
 .idea/
 *.swp
 *.swo
+
+# Internal private launch assets
+LAUNCH_KIT.md
+*.internal.md
