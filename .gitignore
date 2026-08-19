@@ -19,5 +19,8 @@ website/
 site_draft/
 HTML/
 html/
+PDFs/
+pdfs/
+*.pdf
 *.zip
 *.draft.*
