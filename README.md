@@ -1,6 +1,6 @@
-[![Crates.io](https://img.shields.io/crates/v/sabrix-bench.svg)](https://crates.io/crates/sabrix-bench)
 [![CI](https://github.com/Pro-Kla/sabrix-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/Pro-Kla/sabrix-bench/actions)
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/Pro-Kla/sabrix-bench)
+[![Rust: 1.75+](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
 
 # sabrix-bench ⚡
 
@@ -23,10 +23,18 @@ Legacy approaches introduce massive performance and security taxes:
 
 ## 🚀 Quickstart & Installation
 
-### Build & Install from Source
+### 1-Line Install (via Cargo & GitHub)
+
+```bash
+cargo install --git https://github.com/Pro-Kla/sabrix-bench
+```
+
+### Or Build & Install from Local Source
 
 ```bash
 # Clone the repository and install the binary
+git clone https://github.com/Pro-Kla/sabrix-bench.git
+cd sabrix-bench
 cargo install --path .
 ```
 
