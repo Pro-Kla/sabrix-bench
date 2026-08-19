@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -75,18 +75,76 @@ pub struct InspectionResult {
 pub struct McpInspector;
 
 impl McpInspector {
-    /// Inspects a raw JSON-RPC string, measuring parse and inspection latency in microseconds.
+    /// Inspects a raw input string that may be a single JSON object, a JSON array of objects,
+    /// or NDJSON (newline-delimited JSON).
+    pub fn inspect_payload(raw_input: &str) -> Result<Vec<InspectionResult>> {
+        let trimmed = raw_input.trim();
+        if trimmed.is_empty() {
+            bail!("Empty payload received. Expected a valid JSON-RPC 2.0 object or array.");
+        }
+
+        // Check if it's a JSON array
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let parsed_arr: Value = serde_json::from_str(trimmed)
+                .context("Failed to parse input as a valid JSON array")?;
+            if let Some(items) = parsed_arr.as_array() {
+                let mut results = Vec::with_capacity(items.len());
+                for item in items {
+                    let item_str = item.to_string();
+                    let res = Self::inspect_json_value(item, &item_str)?;
+                    results.push(res);
+                }
+                return Ok(results);
+            }
+        }
+
+        // Check if it might be NDJSON (multiple lines of JSON objects)
+        let lines: Vec<&str> = trimmed
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if lines.len() > 1 && lines.iter().all(|l| l.starts_with('{') && l.ends_with('}')) {
+            let mut results = Vec::with_capacity(lines.len());
+            for line in lines {
+                results.push(Self::inspect_json_str(line)?);
+            }
+            return Ok(results);
+        }
+
+        // Default: Single JSON object / payload
+        let single = Self::inspect_json_str(trimmed)?;
+        Ok(vec![single])
+    }
+
+    /// Inspects a single raw JSON-RPC string, measuring parse and inspection latency in microseconds.
     pub fn inspect_json_str(raw_json: &str) -> Result<InspectionResult> {
-        let payload_bytes = raw_json.len();
+        let trimmed = raw_json.trim();
+        if trimmed.is_empty() {
+            bail!("Empty payload received. Expected a valid JSON-RPC 2.0 object.");
+        }
+
+        let payload_bytes = trimmed.len();
         let t0 = Instant::now();
 
         // 1. JSON parsing phase
         let parsed_val: Value =
-            serde_json::from_str(raw_json).context("Failed to parse input as valid JSON")?;
+            serde_json::from_str(trimmed).context("Failed to parse input as valid JSON")?;
         let t1 = Instant::now();
         let parse_duration_us = (t1 - t0).as_secs_f64() * 1_000_000.0;
 
-        // 2. Deterministic Rule Inspection Phase
+        let mut res = Self::inspect_json_value(&parsed_val, trimmed)?;
+        res.parse_duration_us = parse_duration_us;
+        res.total_duration_us = res.parse_duration_us + res.inspection_duration_us;
+        res.payload_bytes = payload_bytes;
+
+        Ok(res)
+    }
+
+    /// Inspects an already parsed `serde_json::Value`
+    pub fn inspect_json_value(parsed_val: &Value, raw_snippet: &str) -> Result<InspectionResult> {
+        let t1 = Instant::now();
         let mut findings = Vec::new();
         let mut tool_name = None;
         let mut arguments = None;
@@ -111,20 +169,25 @@ impl McpInspector {
                             tool_name = Some(format!("resource:{}", uri));
                         }
                     }
+                } else if m_str == "prompts/get" {
+                    if let Some(params) = parsed_val.get("params") {
+                        if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+                            tool_name = Some(format!("prompt:{}", name));
+                        }
+                    }
                 }
                 (true, m_str)
             } else if parsed_val.get("result").is_some() || parsed_val.get("error").is_some() {
                 (false, "jsonrpc/response".to_string())
             } else {
-                (false, "jsonrpc/unknown".to_string())
+                (false, "jsonrpc/non_mcp_object".to_string())
             };
 
-        // Run security checks on entire JSON string and arguments
-        Self::evaluate_security_rules(raw_json, &parsed_val, &mut findings);
+        // Run security checks on raw snippet and structured arguments
+        Self::evaluate_security_rules(raw_snippet, parsed_val, &mut findings);
 
         let t2 = Instant::now();
         let inspection_duration_us = (t2 - t1).as_secs_f64() * 1_000_000.0;
-        let total_duration_us = (t2 - t0).as_secs_f64() * 1_000_000.0;
 
         let max_risk_level = findings
             .iter()
@@ -133,22 +196,28 @@ impl McpInspector {
             .unwrap_or(RiskLevel::Safe);
 
         Ok(InspectionResult {
-            raw_json: raw_json.to_string(),
+            raw_json: raw_snippet.to_string(),
             is_request,
             method,
             tool_name,
             arguments,
             findings,
             max_risk_level,
-            parse_duration_us,
+            parse_duration_us: 0.0,
             inspection_duration_us,
-            total_duration_us,
-            payload_bytes,
+            total_duration_us: inspection_duration_us,
+            payload_bytes: raw_snippet.len(),
         })
     }
 
     fn evaluate_security_rules(raw_json: &str, parsed: &Value, findings: &mut Vec<RiskFinding>) {
         let text_lower = raw_json.to_lowercase();
+        let text_clean = text_lower
+            .replace("\\n", " ")
+            .replace("\\r", " ")
+            .replace("\\t", " ");
+        let normalized_whitespace: String =
+            text_clean.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // Rule 1: Destructive File System Operations
         let dangerous_fs_patterns = [
@@ -187,7 +256,7 @@ impl McpInspector {
         ];
 
         for (pattern, level, desc) in dangerous_fs_patterns {
-            if text_lower.contains(pattern) {
+            if text_lower.contains(pattern) || normalized_whitespace.contains(pattern) {
                 findings.push(RiskFinding {
                     rule_id: "MCP-SEC-001".to_string(),
                     level,
@@ -241,9 +310,12 @@ impl McpInspector {
         ];
 
         for (pattern, level, desc) in rce_patterns {
-            let normalized = text_lower.replace(" ", "");
-            let pat_normalized = pattern.replace(" ", "");
-            if text_lower.contains(pattern) || normalized.contains(&pat_normalized) {
+            let normalized_no_space = text_lower.replace(' ', "");
+            let pat_normalized = pattern.replace(' ', "");
+            if text_lower.contains(pattern)
+                || normalized_whitespace.contains(pattern)
+                || normalized_no_space.contains(&pat_normalized)
+            {
                 findings.push(RiskFinding {
                     rule_id: "MCP-SEC-002".to_string(),
                     level,
@@ -290,7 +362,7 @@ impl McpInspector {
         ];
 
         for (pattern, level, desc) in dangerous_sql {
-            if text_lower.contains(pattern) {
+            if text_lower.contains(pattern) || normalized_whitespace.contains(pattern) {
                 findings.push(RiskFinding {
                     rule_id: "MCP-SEC-003".to_string(),
                     level,
@@ -308,15 +380,13 @@ impl McpInspector {
                 .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                 .collect();
             if candidate.len() >= 16 {
+                let display_prefix: String = candidate.chars().take(10).collect();
                 findings.push(RiskFinding {
                     rule_id: "MCP-SEC-004".to_string(),
                     level: RiskLevel::Critical,
                     title: "Exposed OpenAI / Provider API Key".to_string(),
                     details: "Unmasked secret key found in tool parameters or payload".to_string(),
-                    matched_snippet: format!(
-                        "sk-{}...",
-                        &candidate[3..std::cmp::min(10, candidate.len())]
-                    ),
+                    matched_snippet: format!("{}...", display_prefix),
                 });
             }
         }
@@ -477,6 +547,23 @@ mod tests {
     }
 
     #[test]
+    fn test_multiline_sql_drop_table() {
+        let json = r#"{
+            "jsonrpc": "2.0",
+            "id": "query-10",
+            "method": "tools/call",
+            "params": {
+                "name": "database_query",
+                "arguments": { "sql": "SELECT id\nFROM users;\nDROP\nTABLE\naccounts;" }
+            }
+        }"#;
+
+        let res = McpInspector::inspect_json_str(json).unwrap();
+        assert_eq!(res.max_risk_level, RiskLevel::Critical);
+        assert!(res.findings.iter().any(|f| f.rule_id == "MCP-SEC-003"));
+    }
+
+    #[test]
     fn test_openai_api_key_leak() {
         let json = r#"{
             "jsonrpc": "2.0",
@@ -508,5 +595,53 @@ mod tests {
         let res = McpInspector::inspect_json_str(json).unwrap();
         assert_eq!(res.max_risk_level, RiskLevel::High);
         assert!(res.findings.iter().any(|f| f.rule_id == "MCP-SEC-008"));
+    }
+
+    #[test]
+    fn test_piped_json_array() {
+        let json_arr = r#"[
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "safe_tool", "arguments": {} }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": { "name": "execute_command", "arguments": { "cmd": "rm -rf /" } }
+            }
+        ]"#;
+
+        let results = McpInspector::inspect_payload(json_arr).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].max_risk_level, RiskLevel::Safe);
+        assert_eq!(results[1].max_risk_level, RiskLevel::Critical);
+    }
+
+    #[test]
+    fn test_ndjson_streaming() {
+        let ndjson = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"drop_db\",\"arguments\":{\"sql\":\"DROP DATABASE prod;\"}}}";
+        let results = McpInspector::inspect_payload(ndjson).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].method, "tools/list");
+        assert_eq!(results[1].max_risk_level, RiskLevel::Critical);
+    }
+
+    #[test]
+    fn test_non_mcp_valid_json() {
+        let ping_json = r#"{"jsonrpc": "2.0", "id": 1, "method": "ping"}"#;
+        let res = McpInspector::inspect_json_str(ping_json).unwrap();
+        assert_eq!(res.method, "ping");
+        assert_eq!(res.max_risk_level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_empty_and_malformed_errors() {
+        assert!(McpInspector::inspect_payload("").is_err());
+        assert!(McpInspector::inspect_payload("   ").is_err());
+        assert!(McpInspector::inspect_payload("{ truncated").is_err());
+        assert!(McpInspector::inspect_payload("random binary garbage \x00\x01\x02").is_err());
     }
 }

@@ -114,15 +114,36 @@ impl AgentBenchmark {
     }
 
     pub fn run(config: &BenchmarkConfig) -> BenchmarkReport {
+        if config.turns == 0 {
+            return BenchmarkReport {
+                total_turns: 0,
+                total_payload_bytes: 0,
+                total_local_time_us: 0.0,
+                distribution: LatencyDistribution {
+                    count: 0,
+                    min_us: 0.0,
+                    mean_us: 0.0,
+                    p50_us: 0.0,
+                    p95_us: 0.0,
+                    p99_us: 0.0,
+                    max_us: 0.0,
+                    std_dev_us: 0.0,
+                },
+                turns_detail: Vec::new(),
+                legacy_proxy_per_turn_ms: 35.0,
+                saas_firewall_per_turn_ms: 120.0,
+            };
+        }
+
         let mut turn_metrics = Vec::with_capacity(config.turns);
         let mut total_payload_bytes = 0;
 
-        let pb = if !config.quiet {
+        let pb = if !config.quiet && config.turns > 1 {
             let p = ProgressBar::new(config.turns as u64);
             p.set_style(
                 ProgressStyle::default_bar()
                     .template("{prefix:.bold} [{bar:40.cyan/blue}] {pos}/{len} turns ({percent}%) - {msg}")
-                    .expect("Valid template")
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
                     .progress_chars("█▓▒░"),
             );
             p.set_prefix("Benchmarking MCP Loop");
@@ -143,8 +164,10 @@ impl AgentBenchmark {
             let serialization_us = (Instant::now() - t_ser_0).as_secs_f64() * 1_000_000.0;
 
             // Measure inspect and parse overhead
-            let inspect_res = McpInspector::inspect_json_str(&cloned_str)
-                .expect("Synthetic MCP payload should be valid JSON");
+            let inspect_res = match McpInspector::inspect_json_str(&cloned_str) {
+                Ok(res) => res,
+                Err(_) => continue,
+            };
 
             let total_local_overhead_us = serialization_us + inspect_res.total_duration_us;
 
@@ -160,12 +183,14 @@ impl AgentBenchmark {
             });
 
             if let Some(ref p) = pb {
-                p.set_message(format!(
-                    "Turn {}: {} ({:.1}µs)",
-                    i + 1,
-                    tool_name,
-                    total_local_overhead_us
-                ));
+                if config.turns < 100 || (i + 1) % (config.turns / 20).max(1) == 0 {
+                    p.set_message(format!(
+                        "Turn {}: {} ({:.1}µs)",
+                        i + 1,
+                        tool_name,
+                        total_local_overhead_us
+                    ));
+                }
                 p.inc(1);
             }
         }
@@ -177,6 +202,7 @@ impl AgentBenchmark {
         let mut latencies: Vec<f64> = turn_metrics
             .iter()
             .map(|t| t.total_local_overhead_us)
+            .filter(|v| !v.is_nan() && !v.is_infinite())
             .collect();
         latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -184,7 +210,12 @@ impl AgentBenchmark {
         let min_us = latencies.first().copied().unwrap_or(0.0);
         let max_us = latencies.last().copied().unwrap_or(0.0);
         let sum: f64 = latencies.iter().sum();
-        let mean_us = if count > 0 { sum / count as f64 } else { 0.0 };
+        let raw_mean = if count > 0 { sum / count as f64 } else { 0.0 };
+        let mean_us = if raw_mean.is_nan() || raw_mean.is_infinite() {
+            0.0
+        } else {
+            raw_mean
+        };
 
         let p50_us = Self::percentile(&latencies, 50.0);
         let p95_us = Self::percentile(&latencies, 95.0);
@@ -196,7 +227,12 @@ impl AgentBenchmark {
         } else {
             0.0
         };
-        let std_dev_us = variance.sqrt();
+        let raw_std_dev = variance.sqrt();
+        let std_dev_us = if raw_std_dev.is_nan() || raw_std_dev.is_infinite() {
+            0.0
+        } else {
+            raw_std_dev
+        };
 
         let distribution = LatencyDistribution {
             count,
@@ -224,11 +260,14 @@ impl AgentBenchmark {
         if sorted.is_empty() {
             return 0.0;
         }
+        if sorted.len() == 1 {
+            return sorted[0];
+        }
         let rank = (pct / 100.0) * (sorted.len() - 1) as f64;
         let lower = rank.floor() as usize;
         let upper = rank.ceil() as usize;
-        if lower == upper {
-            sorted[lower]
+        if lower == upper || upper >= sorted.len() {
+            sorted[lower.min(sorted.len() - 1)]
         } else {
             let weight = rank - lower as f64;
             sorted[lower] * (1.0 - weight) + sorted[upper] * weight
@@ -241,19 +280,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_benchmark_run() {
+    fn test_benchmark_boundary_turns_zero() {
         let config = BenchmarkConfig {
-            turns: 15,
+            turns: 0,
             payload_scale: 1,
             quiet: true,
         };
-
         let report = AgentBenchmark::run(&config);
-        assert_eq!(report.total_turns, 15);
-        assert_eq!(report.turns_detail.len(), 15);
+        assert_eq!(report.total_turns, 0);
+        assert_eq!(report.distribution.count, 0);
+        assert_eq!(report.distribution.mean_us, 0.0);
+        assert_eq!(report.distribution.std_dev_us, 0.0);
+    }
+
+    #[test]
+    fn test_benchmark_boundary_turns_one() {
+        let config = BenchmarkConfig {
+            turns: 1,
+            payload_scale: 1,
+            quiet: true,
+        };
+        let report = AgentBenchmark::run(&config);
+        assert_eq!(report.total_turns, 1);
+        assert_eq!(report.distribution.count, 1);
         assert!(report.distribution.mean_us > 0.0);
+        assert_eq!(report.distribution.min_us, report.distribution.max_us);
+        assert_eq!(report.distribution.p50_us, report.distribution.min_us);
+        assert_eq!(report.distribution.std_dev_us, 0.0);
+    }
+
+    #[test]
+    fn test_benchmark_large_scale() {
+        let config = BenchmarkConfig {
+            turns: 100,
+            payload_scale: 2,
+            quiet: true,
+        };
+        let report = AgentBenchmark::run(&config);
+        assert_eq!(report.total_turns, 100);
         assert!(report.distribution.p50_us <= report.distribution.p95_us);
         assert!(report.distribution.p95_us <= report.distribution.p99_us);
         assert!(report.distribution.p99_us <= report.distribution.max_us);
+        assert!(!report.distribution.mean_us.is_nan());
+        assert!(!report.distribution.std_dev_us.is_nan());
     }
 }

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::io::{self, Read};
+use colored::*;
+use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 mod benchmark;
@@ -65,7 +66,14 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(e) = run_cli().await {
+        eprintln!("\n{} {}", "Error:".red().bold(), e);
+        std::process::exit(1);
+    }
+}
+
+async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -88,19 +96,32 @@ async fn main() -> Result<()> {
                 // Read from stdin
                 let mut buffer = String::new();
                 let mut stdin = io::stdin();
-                // Check if stdin has data
+
+                if stdin.is_terminal() {
+                    eprintln!(
+                        "{} No input provided.\nPass a JSON payload via --payload, --input <file>, pipe from stdin, or run with --demo.",
+                        "Notice:".yellow().bold()
+                    );
+                    std::process::exit(1);
+                }
+
                 stdin
                     .read_to_string(&mut buffer)
-                    .context("Failed to read from standard input")?;
+                    .context("Failed to read from standard input stream")?;
+
                 if buffer.trim().is_empty() {
-                    eprintln!("No input provided. Pass a JSON payload via --payload, --input <file>, stdin, or use --demo.");
+                    eprintln!("{} Stdin stream was empty.", "Notice:".yellow().bold());
                     std::process::exit(1);
                 }
                 buffer
             };
 
-            let inspection = McpInspector::inspect_json_str(&raw_json)?;
-            Reporter::render_inspection(&inspection);
+            let inspections = McpInspector::inspect_payload(&raw_json)
+                .with_context(|| "Failed to process MCP JSON-RPC payload")?;
+
+            for inspection in &inspections {
+                Reporter::render_inspection(inspection);
+            }
         }
 
         Commands::Bench {

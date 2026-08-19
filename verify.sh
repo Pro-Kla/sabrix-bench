@@ -59,8 +59,47 @@ step_banner "6. CLI Verification: Architectural Comparison Matrix (compare)"
 cargo run -- compare
 success_banner "Comparison matrix command"
 
+# Step 7: Edge Case, Boundary & Stdio Streaming Suite
+step_banner "7. Edge Case, Boundary & Stdio Stress Tests"
+
+echo "Testing piped single JSON payload..."
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_tool","arguments":{"query":"test"}}}' | cargo run -- trace
+
+echo "Testing piped JSON array payload..."
+echo '[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /tmp/data"}}}]' | cargo run -- trace
+
+echo "Testing piped NDJSON (Newline Delimited JSON)..."
+printf '{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///etc/hosts"}}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sql","arguments":{"sql":"DROP TABLE logs;"}}}\n' | cargo run -- trace
+
+echo "Testing boundary benchmark: --turns 0"
+cargo run -- bench --turns 0 --quiet
+
+echo "Testing boundary benchmark: --turns 1"
+cargo run -- bench --turns 1 --quiet
+
+echo "Testing high-iteration stress benchmark: --turns 500 --scale 2"
+cargo run -- bench --turns 500 --scale 2 --quiet
+
+echo "Testing graceful error handling on malformed JSON..."
+if echo '{"jsonrpc": "2.0", broken_syntax' | cargo run -- trace 2>/dev/null; then
+    echo -e "${RED}Failed: Expected malformed JSON to return non-zero exit code${NC}"
+    exit 1
+else
+    echo "✔ Handled malformed JSON gracefully with non-zero exit code"
+fi
+
+echo "Testing graceful error handling on arbitrary binary garbage..."
+if echo -e '\x00\x01\x02\xFF\xFE' | cargo run -- trace 2>/dev/null; then
+    echo -e "${RED}Failed: Expected binary garbage to return non-zero exit code${NC}"
+    exit 1
+else
+    echo "✔ Handled binary garbage gracefully with non-zero exit code"
+fi
+
+success_banner "Edge case, boundary and stdio streaming test suite"
+
 echo -e "\n${GREEN}${BOLD}"
 echo "╔═══════════════════════════════════════════════════════════════════════════════╗"
-echo "║          ALL CHECKS & CLI BENCHMARKS PASSED CLEANLY (100% READY)              ║"
+echo "║          ALL CHECKS, BENCHMARKS & STRESS TESTS PASSED (100% HARDENED)        ║"
 echo "╚═══════════════════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
