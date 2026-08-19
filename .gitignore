@@ -1,0 +1,13 @@
+# Rust build target
+/target
+
+# Cargo lockfile for binaries (tracked if app, ignored if library - we include standard Rust patterns)
+Cargo.lock.backup
+**/*.rs.bk
+
+# IDE and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
