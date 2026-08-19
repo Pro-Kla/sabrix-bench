@@ -17,4 +17,7 @@ LAUNCH_KIT.md
 *.internal.md
 website/
 site_draft/
+HTML/
+html/
+*.zip
 *.draft.*
