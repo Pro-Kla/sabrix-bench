@@ -39,7 +39,7 @@ cargo install sabrix-bench
 Or build from source:
 
 ```bash
-git clone https://github.com/sabrix-ai/sabrix-bench.git
+git clone https://github.com/Pro-Kla/sabrix-bench.git
 cd sabrix-bench
 cargo build --release
 ```

@@ -2,9 +2,11 @@
 name = "sabrix-bench"
 version = "0.1.0"
 edition = "2021"
-description = "Fast, zero-bloat developer CLI and benchmark tool for Model Context Protocol (MCP) inspection and agent latency analysis."
+description = "⚡ Fast MCP JSON-RPC inspector & multi-turn agent latency benchmark in Rust"
 authors = ["Sabrix Open Source Team <oss@sabrix.ai>"]
 license = "Apache-2.0 OR MIT"
+repository = "https://github.com/Pro-Kla/sabrix-bench"
+homepage = "https://sabrix.ai"
 readme = "README.md"
 keywords = ["mcp", "agent", "benchmark", "json-rpc", "security"]
 categories = ["command-line-utilities", "development-tools::profiling"]

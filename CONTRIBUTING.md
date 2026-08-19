@@ -15,7 +15,7 @@ Thank you for your interest in contributing to `sabrix-bench`! We welcome contri
 ### Build & Run
 ```bash
 # Clone the repository
-git clone https://github.com/sabrix-ai/sabrix-bench.git
+git clone https://github.com/Pro-Kla/sabrix-bench.git
 cd sabrix-bench
 
 # Build in debug mode

@@ -35,7 +35,7 @@ echo -e "${GREEN}✔ Working tree is clean.${NC}"
 echo -e "\n${BOLD}${CYAN}▶ Step 3: Checking Git Remote 'origin'...${NC}"
 if ! git remote get-url origin >/dev/null 2>&1; then
     echo -e "${YELLOW}Remote 'origin' not configured.${NC}"
-    read -p "Enter GitHub repository URL (e.g., git@github.com:sabrix-ai/sabrix-bench.git): " REMOTE_URL
+    read -p "Enter GitHub repository URL (e.g., git@github.com:Pro-Kla/sabrix-bench.git): " REMOTE_URL
     if [ -n "$REMOTE_URL" ]; then
         git remote add origin "$REMOTE_URL"
         echo -e "${GREEN}✔ Added remote origin: ${REMOTE_URL}${NC}"
