@@ -15,7 +15,7 @@ use reporter::Reporter;
 #[derive(Parser, Debug)]
 #[command(
     name = "sabrix-bench",
-    author = "Chandradeep Neel <chandradeep@sabrix.ai>",
+    author = "Chandradeep <chandradeep@sabrix.ai>",
     version = "0.1.1",
     about = "⚡ Ultra-fast developer CLI & benchmark tool for Model Context Protocol (MCP) inspection and agent latency profiling.",
     long_about = "sabrix-bench is a lightweight, zero-bloat developer utility for inspecting MCP JSON-RPC messages, flagging dangerous tool calls, and benchmarking per-turn latency overhead across agent loops."
