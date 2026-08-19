@@ -1,10 +1,10 @@
+[![Crates.io](https://img.shields.io/crates/v/sabrix-bench.svg)](https://crates.io/crates/sabrix-bench)
+[![CI](https://github.com/Pro-Kla/sabrix-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/Pro-Kla/sabrix-bench/actions)
+[![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/Pro-Kla/sabrix-bench)
+
 # sabrix-bench ⚡
 
 > Ultra-fast, zero-bloat developer CLI and benchmark harness for Model Context Protocol (MCP) traffic inspection and agent loop latency profiling.
-
-[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](#installation)
-[![Overhead](https://img.shields.io/badge/latency-%3C2%C2%B5s-brightgreen.svg)](#benchmark)
 
 ---
 
