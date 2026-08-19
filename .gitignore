@@ -12,6 +12,9 @@ Cargo.lock.backup
 *.swp
 *.swo
 
-# Internal private launch assets
+# Internal private launch assets & website drafts (never pushed to git)
 LAUNCH_KIT.md
 *.internal.md
+website/
+site_draft/
+*.draft.*
