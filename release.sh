@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-VERSION="v0.1.0"
-NOTES_FILE="RELEASE_NOTES_v0.1.0.md"
+VERSION="v$(grep '^version = ' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
+NOTES_FILE="RELEASE_NOTES_${VERSION}.md"
 
 # ANSI Color Codes
 GREEN='\033[0;32m'
@@ -59,7 +59,7 @@ echo -e "\n${BOLD}${CYAN}▶ Step 5: Creating & Pushing Annotated Git Tag (${VER
 if git rev-parse "$VERSION" >/dev/null 2>&1; then
     echo -e "${YELLOW}Tag ${VERSION} already exists locally.${NC}"
 else
-    git tag -a "$VERSION" -m "Release ${VERSION}: MCP JSON-RPC Tracer & Agent Loop Latency Profiler"
+    git tag -a "$VERSION" -m "Release ${VERSION}: Fast MCP JSON-RPC Inspector & Agent Latency Benchmark"
     echo -e "${GREEN}✔ Created annotated tag ${VERSION}.${NC}"
 fi
 
@@ -72,7 +72,7 @@ if command -v gh >/dev/null 2>&1; then
     if gh auth status >/dev/null 2>&1; then
         echo "Creating GitHub Release via 'gh' CLI..."
         gh release create "$VERSION" \
-            --title "${VERSION} - Initial Release: MCP Tracer & Agent Loop Latency Profiler" \
+            --title "${VERSION} - Fast MCP JSON-RPC Inspector & Agent Latency Benchmark" \
             --notes-file "$NOTES_FILE"
         echo -e "${GREEN}✔ GitHub Release published successfully!${NC}"
     else

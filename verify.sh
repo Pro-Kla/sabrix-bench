@@ -54,10 +54,17 @@ step_banner "5. CLI Verification: Multi-Turn Agent Loop Benchmark (bench --turns
 cargo run -- bench --turns 30
 success_banner "Agent loop benchmark command"
 
-# Step 6: Architecture Comparison Verification
-step_banner "6. CLI Verification: Architectural Comparison Matrix (compare)"
-cargo run -- compare
-success_banner "Comparison matrix command"
+# Step 6: Dynamic Multi-Turn Comparison & Architecture Matrix Verification
+step_banner "6. CLI Verification: Multi-Turn Comparison & Matrix (compare)"
+echo "Running dynamic 10-turn latency comparison vs SaaS firewall baseline..."
+cargo run -- compare --turns 10
+
+echo "Running JSON machine-readable comparison..."
+cargo run -- compare --turns 5 --json
+
+echo "Running static architecture matrix..."
+cargo run -- compare --matrix
+success_banner "Multi-turn comparison and architectural matrix commands"
 
 # Step 7: Edge Case, Boundary & Stdio Streaming Suite
 step_banner "7. Edge Case, Boundary & Stdio Stress Tests"

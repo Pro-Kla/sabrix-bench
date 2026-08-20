@@ -1,4 +1,4 @@
-use crate::benchmark::BenchmarkReport;
+use crate::benchmark::{BenchmarkReport, ComparisonReport};
 use crate::inspector::{InspectionResult, RiskLevel};
 use colored::*;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -367,6 +367,117 @@ impl Reporter {
         }
 
         println!("{}", tax_table);
+        println!();
+
+        Self::print_footer();
+    }
+
+    /// Formats and renders the live multi-turn comparison between in-process and SaaS firewalls
+    pub fn render_comparison(report: &ComparisonReport) {
+        println!();
+        println!(
+            "{}",
+            "╔═══════════════════════════════════════════════════════════════════════════════╗"
+                .bright_cyan()
+        );
+        println!(
+            "{}",
+            "║        SABRIX MULTI-TURN AGENT LATENCY: IN-PROCESS VS. REMOTE SAAS            ║"
+                .bright_cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            "╚═══════════════════════════════════════════════════════════════════════════════╝"
+                .bright_cyan()
+        );
+        println!();
+
+        if report.total_turns == 0 {
+            println!("{}", "Zero turns benchmarked.".yellow());
+            Self::print_footer();
+            return;
+        }
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_content_arrangement(ContentArrangement::Dynamic);
+
+        table.set_header(vec![
+            Cell::new("Turn #").add_attribute(Attribute::Bold),
+            Cell::new("Tool / Action").add_attribute(Attribute::Bold),
+            Cell::new("In-Process Sabrix (µs)").add_attribute(Attribute::Bold),
+            Cell::new("Remote SaaS Firewall (ms)").add_attribute(Attribute::Bold),
+            Cell::new("Time Saved per Turn").add_attribute(Attribute::Bold),
+        ]);
+
+        for turn in &report.turns {
+            let in_proc_str = format!("{:.2} µs", turn.in_process_us);
+            let saas_str = format!("{:.1} ms", turn.saas_ms);
+            let saved_str = format!("+{:.3} ms", turn.time_saved_ms);
+
+            table.add_row(vec![
+                Cell::new(format!("Turn {}", turn.turn_index)),
+                Cell::new(&turn.tool_name).fg(Color::Yellow),
+                Cell::new(in_proc_str)
+                    .fg(Color::Green)
+                    .add_attribute(Attribute::Bold),
+                Cell::new(saas_str).fg(Color::Red),
+                Cell::new(saved_str)
+                    .fg(Color::Cyan)
+                    .add_attribute(Attribute::Bold),
+            ]);
+        }
+
+        println!("{}", table);
+        println!();
+
+        // Executive Summary Box
+        println!(
+            "{}",
+            format!(
+                "📊 EXECUTIVE SUMMARY ({}-Turn Autonomous Agent Loop):",
+                report.total_turns
+            )
+            .bold()
+            .underline()
+        );
+
+        let in_proc_sec = report.total_in_process_ms / 1000.0;
+        let saas_sec = report.total_saas_ms / 1000.0;
+        let saved_sec = report.total_time_saved_ms / 1000.0;
+        let egress_kb = report.total_egress_bytes_saved as f64 / 1024.0;
+
+        println!(
+            "  • {} {:.3} ms ({:.6} s)",
+            "Total In-Process Governance Time:".bold(),
+            report.total_in_process_ms,
+            in_proc_sec
+        );
+        println!(
+            "  • {} {:.1} ms ({:.2} s)",
+            "Total Remote SaaS Firewall Latency:".bold(),
+            report.total_saas_ms,
+            saas_sec
+        );
+        println!(
+            "  • {} {} ({} faster)",
+            "Net Wall-Clock Latency Saved:".bold(),
+            format!(
+                "+{:.3} ms (+{:.3} s)",
+                report.total_time_saved_ms, saved_sec
+            )
+            .green()
+            .bold(),
+            format!("{:.0}x", report.speedup_factor).cyan().bold()
+        );
+        println!(
+            "  • {} {} (100% In-VPC / Zero Egress)",
+            "Payload Data Egress Eliminated:".bold(),
+            format!("{:.2} KB", egress_kb).yellow().bold()
+        );
         println!();
 
         Self::print_footer();

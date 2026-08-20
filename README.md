@@ -101,12 +101,19 @@ sabrix-bench bench --turns 20 --json
 
 ---
 
-### 3. `sabrix-bench compare` — Architectural Overhead Matrix
+### 3. `sabrix-bench compare` — Live Multi-Turn Latency Comparison
 
-Output a side-by-side architectural comparison contrasting In-VPC embedded engines against legacy proxies and remote SaaS firewalls.
+Run an empirical, turn-by-turn benchmark measuring safe-Rust in-process execution on your CPU against the WAN network overhead of remote SaaS AI firewalls (~120 ms).
 
 ```bash
-sabrix-bench compare
+# Run dynamic 30-turn live latency comparison
+sabrix-bench compare --turns 30
+
+# Output machine-readable comparison JSON for CI/CD pipelines
+sabrix-bench compare --turns 20 --json
+
+# View full static architectural comparison matrix
+sabrix-bench compare --matrix
 ```
 
 ---

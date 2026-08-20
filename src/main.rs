@@ -61,8 +61,24 @@ enum Commands {
         json: bool,
     },
 
-    /// Compare architectural latency, privacy posture, and compounded costs
-    Compare,
+    /// Compare dynamic multi-turn agent latency against remote SaaS AI firewalls
+    Compare {
+        /// Number of simulated agent loop turns
+        #[arg(short, long, default_value_t = 30)]
+        turns: usize,
+
+        /// Baseline remote SaaS firewall latency per turn in milliseconds
+        #[arg(long, default_value_t = 120.0)]
+        saas_latency_ms: f64,
+
+        /// Output comparison results as machine-readable JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Show static architectural capabilities matrix instead of live latency comparison
+        #[arg(long)]
+        matrix: bool,
+    },
 }
 
 #[tokio::main]
@@ -145,8 +161,22 @@ async fn run_cli() -> Result<()> {
             }
         }
 
-        Commands::Compare => {
-            Reporter::render_comparison_matrix();
+        Commands::Compare {
+            turns,
+            saas_latency_ms,
+            json,
+            matrix,
+        } => {
+            if matrix {
+                Reporter::render_comparison_matrix();
+            } else {
+                let report = AgentBenchmark::run_comparison(turns, saas_latency_ms);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    Reporter::render_comparison(&report);
+                }
+            }
         }
     }
 
