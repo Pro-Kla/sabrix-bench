@@ -1,6 +1,6 @@
 [package]
 name = "sabrix-bench"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 description = "⚡ Fast MCP JSON-RPC inspector & multi-turn agent latency benchmark in Rust"
 authors = ["Chandradeep <chandradeep@sabrix.ai>"]
@@ -20,3 +20,6 @@ colored = "2.1"
 indicatif = "0.17"
 comfy-table = "7.1"
 anyhow = "1.0"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+futures-util = "0.3"
+

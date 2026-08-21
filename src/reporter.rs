@@ -1,15 +1,19 @@
-use crate::benchmark::{BenchmarkReport, ComparisonReport};
+use crate::benchmark::{BenchmarkReport as LocalBenchmarkReport, ComparisonReport};
 use crate::inspector::{InspectionResult, RiskLevel};
+use crate::metrics::BenchmarkReport as HttpBenchmarkReport;
+use anyhow::{Context, Result};
 use colored::*;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
+use std::fs::File;
+use std::io::Write;
 
 pub struct Reporter;
 
 impl Reporter {
     pub const CTA_FOOTER: &'static str =
-        "Deploying agents to production? Enforce zero-egress In-VPC MCP security in < 2µs -> https://sabrix.ai";
+        "Deploying AI agents & LLM gateways to production? Enforce zero-egress In-VPC security in < 2µs -> https://sabrix.ai";
 
     /// Formats and renders a single MCP JSON-RPC inspection result
     pub fn render_inspection(result: &InspectionResult) {
@@ -32,7 +36,6 @@ impl Reporter {
         );
         println!();
 
-        // 1. Overview Metadata Table
         let mut meta_table = Table::new();
         meta_table
             .load_preset(UTF8_FULL)
@@ -98,86 +101,23 @@ impl Reporter {
         ]);
 
         meta_table.add_row(vec![
-            Cell::new("Rule Evaluation Overhead"),
+            Cell::new("Inspection Engine"),
             Cell::new(format!("{:.2} µs", result.inspection_duration_us)).fg(Color::Cyan),
         ]);
 
         meta_table.add_row(vec![
-            Cell::new("Total In-Process Latency"),
-            Cell::new(format!(
-                "{:.2} µs ({:.4} ms)",
-                result.total_duration_us,
-                result.total_duration_us / 1000.0
-            ))
-            .fg(Color::Green)
-            .add_attribute(Attribute::Bold),
+            Cell::new("Total Latency"),
+            Cell::new(format!("{:.2} µs", result.total_duration_us))
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
         ]);
 
         println!("{}", meta_table);
         println!();
-
-        // 2. Arguments snippet if present
-        if let Some(ref args) = result.arguments {
-            println!("{}", "Tool Arguments:".bold().underline());
-            if let Ok(pretty) = serde_json::to_string_pretty(args) {
-                println!("{}", pretty.dimmed());
-            }
-            println!();
-        }
-
-        // 3. Security Findings Table
-        if result.findings.is_empty() {
-            println!(
-                "{}",
-                "✓ No malicious tool patterns, dangerous SQL mutations, or exposed API credentials detected."
-                    .green()
-                    .bold()
-            );
-        } else {
-            println!("{}", "Security Risk Findings:".red().bold().underline());
-            let mut findings_table = Table::new();
-            findings_table
-                .load_preset(UTF8_FULL)
-                .apply_modifier(UTF8_ROUND_CORNERS)
-                .set_content_arrangement(ContentArrangement::Dynamic);
-
-            findings_table.set_header(vec![
-                Cell::new("Rule ID").add_attribute(Attribute::Bold),
-                Cell::new("Severity").add_attribute(Attribute::Bold),
-                Cell::new("Vulnerability Title").add_attribute(Attribute::Bold),
-                Cell::new("Trigger / Snippet").add_attribute(Attribute::Bold),
-                Cell::new("Details").add_attribute(Attribute::Bold),
-            ]);
-
-            for finding in &result.findings {
-                let sev_cell = match finding.level {
-                    RiskLevel::Safe => Cell::new("SAFE").fg(Color::Green),
-                    RiskLevel::Low => Cell::new("LOW").fg(Color::Blue),
-                    RiskLevel::Medium => Cell::new("MEDIUM").fg(Color::Yellow),
-                    RiskLevel::High => Cell::new("HIGH").fg(Color::DarkYellow),
-                    RiskLevel::Critical => Cell::new("CRITICAL")
-                        .fg(Color::Red)
-                        .add_attribute(Attribute::Bold),
-                };
-
-                findings_table.add_row(vec![
-                    Cell::new(&finding.rule_id).fg(Color::Cyan),
-                    sev_cell,
-                    Cell::new(&finding.title).add_attribute(Attribute::Bold),
-                    Cell::new(&finding.matched_snippet).fg(Color::Red),
-                    Cell::new(&finding.details),
-                ]);
-            }
-
-            println!("{}", findings_table);
-        }
-
-        println!();
-        Self::print_footer();
     }
 
-    /// Formats and renders the multi-turn agent benchmark report
-    pub fn render_benchmark(report: &BenchmarkReport) {
+    /// Formats and renders the multi-turn agent latency benchmark report
+    pub fn render_benchmark(report: &LocalBenchmarkReport) {
         println!();
         println!(
             "{}",
@@ -186,7 +126,7 @@ impl Reporter {
         );
         println!(
             "{}",
-            "║               SABRIX MULTI-TURN AGENT LOOP BENCHMARK REPORT                   ║"
+            "║             SABRIX IN-PROCESS AGENT OVERHEAD BENCHMARK                        ║"
                 .bright_cyan()
                 .bold()
         );
@@ -197,182 +137,54 @@ impl Reporter {
         );
         println!();
 
-        // 1. Latency Distribution Summary Table
-        let mut dist_table = Table::new();
-        dist_table
+        let mut table = Table::new();
+        table
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Dynamic);
 
-        dist_table.set_header(vec![
+        table.set_header(vec![
             Cell::new("Metric").add_attribute(Attribute::Bold),
-            Cell::new("Local In-Process Rust Latency (µs)").add_attribute(Attribute::Bold),
-            Cell::new("Latency in Milliseconds (ms)").add_attribute(Attribute::Bold),
+            Cell::new("Value").add_attribute(Attribute::Bold),
         ]);
 
-        let dist = &report.distribution;
-        dist_table.add_row(vec![
-            Cell::new("Total Simulated Agent Turns"),
-            Cell::new(report.total_turns.to_string()),
-            Cell::new("-"),
+        table.add_row(vec![
+            Cell::new("Total Agent Turns"),
+            Cell::new(format!("{}", report.total_turns)),
         ]);
-        dist_table.add_row(vec![
-            Cell::new("Min Latency"),
-            Cell::new(format!("{:.2} µs", dist.min_us)),
-            Cell::new(format!("{:.4} ms", dist.min_us / 1000.0)),
+        table.add_row(vec![
+            Cell::new("Total Payload Inspected"),
+            Cell::new(format!(
+                "{} bytes ({:.2} KB)",
+                report.total_payload_bytes,
+                report.total_payload_bytes as f64 / 1024.0
+            )),
         ]);
-        dist_table.add_row(vec![
-            Cell::new("p50 (Median)"),
-            Cell::new(format!("{:.2} µs", dist.p50_us))
+        table.add_row(vec![
+            Cell::new("Mean Local Latency / Turn"),
+            Cell::new(format!("{:.3} µs", report.distribution.mean_us))
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),
-            Cell::new(format!("{:.4} ms", dist.p50_us / 1000.0)).fg(Color::Green),
         ]);
-        dist_table.add_row(vec![
-            Cell::new("Mean"),
-            Cell::new(format!("{:.2} µs", dist.mean_us)),
-            Cell::new(format!("{:.4} ms", dist.mean_us / 1000.0)),
+        table.add_row(vec![
+            Cell::new("Median (p50) Overhead"),
+            Cell::new(format!("{:.3} µs", report.distribution.p50_us)).fg(Color::Cyan),
         ]);
-        dist_table.add_row(vec![
-            Cell::new("p95"),
-            Cell::new(format!("{:.2} µs", dist.p95_us)).fg(Color::Cyan),
-            Cell::new(format!("{:.4} ms", dist.p95_us / 1000.0)),
+        table.add_row(vec![
+            Cell::new("95th Percentile (p95)"),
+            Cell::new(format!("{:.3} µs", report.distribution.p95_us)).fg(Color::Yellow),
         ]);
-        dist_table.add_row(vec![
-            Cell::new("p99"),
-            Cell::new(format!("{:.2} µs", dist.p99_us)).fg(Color::Yellow),
-            Cell::new(format!("{:.4} ms", dist.p99_us / 1000.0)),
-        ]);
-        dist_table.add_row(vec![
-            Cell::new("Max Latency"),
-            Cell::new(format!("{:.2} µs", dist.max_us)),
-            Cell::new(format!("{:.4} ms", dist.max_us / 1000.0)),
-        ]);
-        dist_table.add_row(vec![
-            Cell::new("Std Dev (σ)"),
-            Cell::new(format!("{:.2} µs", dist.std_dev_us)),
-            Cell::new(format!("{:.4} ms", dist.std_dev_us / 1000.0)),
+        table.add_row(vec![
+            Cell::new("99th Percentile (p99)"),
+            Cell::new(format!("{:.3} µs", report.distribution.p99_us)).fg(Color::Red),
         ]);
 
-        println!(
-            "{}",
-            "1. IN-PROCESS AGENT OVERHEAD DISTRIBUTION"
-                .bold()
-                .underline()
-        );
-        println!("{}", dist_table);
+        println!("{}", table);
         println!();
-
-        // 2. Comparative Architecture Overhead
-        println!(
-            "{}",
-            "2. PER-TURN ARCHITECTURE LATENCY COMPARISON"
-                .bold()
-                .underline()
-        );
-        let mut comp_table = Table::new();
-        comp_table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_content_arrangement(ContentArrangement::Dynamic);
-
-        comp_table.set_header(vec![
-            Cell::new("Architecture Layer").add_attribute(Attribute::Bold),
-            Cell::new("Per-Turn Latency").add_attribute(Attribute::Bold),
-            Cell::new("Overhead vs Sabrix").add_attribute(Attribute::Bold),
-            Cell::new("Deployment Model").add_attribute(Attribute::Bold),
-        ]);
-
-        let local_mean_ms = dist.mean_us / 1000.0;
-        let legacy_speedup = (report.legacy_proxy_per_turn_ms / local_mean_ms.max(0.0001)) as u64;
-        let saas_speedup = (report.saas_firewall_per_turn_ms / local_mean_ms.max(0.0001)) as u64;
-
-        comp_table.add_row(vec![
-            Cell::new("Sabrix In-VPC / In-Process Engine")
-                .fg(Color::Green)
-                .add_attribute(Attribute::Bold),
-            Cell::new(format!("{:.2} µs ({:.4} ms)", dist.mean_us, local_mean_ms)).fg(Color::Green),
-            Cell::new("1x (Baseline - Zero Overhead)").fg(Color::Green),
-            Cell::new("Embedded / Local Sidecar (Zero-Egress)"),
-        ]);
-
-        comp_table.add_row(vec![
-            Cell::new("Legacy Python / Node Proxy").fg(Color::Yellow),
-            Cell::new(format!("{:.1} ms", report.legacy_proxy_per_turn_ms)).fg(Color::Yellow),
-            Cell::new(format!("{}x SLOWER", legacy_speedup))
-                .fg(Color::Yellow)
-                .add_attribute(Attribute::Bold),
-            Cell::new("Local / Intra-cluster HTTP wrapper"),
-        ]);
-
-        comp_table.add_row(vec![
-            Cell::new("Legacy SaaS AI Firewall").fg(Color::Red),
-            Cell::new(format!("{:.1} ms", report.saas_firewall_per_turn_ms)).fg(Color::Red),
-            Cell::new(format!("{}x SLOWER", saas_speedup))
-                .fg(Color::Red)
-                .add_attribute(Attribute::Bold),
-            Cell::new("Remote Cloud Egress (TLS + Network Hop)"),
-        ]);
-
-        println!("{}", comp_table);
-        println!();
-
-        // 3. Compounded Agent Loop Latency Tax Table
-        println!(
-            "{}",
-            "3. COMPOUNDED AGENT LOOP LATENCY TAX (MULTI-TURN ACCELERATION)"
-                .bold()
-                .underline()
-        );
-        let mut tax_table = Table::new();
-        tax_table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_content_arrangement(ContentArrangement::Dynamic);
-
-        tax_table.set_header(vec![
-            Cell::new("Agent Loop Depth").add_attribute(Attribute::Bold),
-            Cell::new("Sabrix In-VPC Engine").add_attribute(Attribute::Bold),
-            Cell::new("Legacy Python Proxy").add_attribute(Attribute::Bold),
-            Cell::new("SaaS AI Firewall").add_attribute(Attribute::Bold),
-            Cell::new("Time Saved per User Request").add_attribute(Attribute::Bold),
-        ]);
-
-        let loop_scenarios = [5, 10, 20, 30, 50];
-        for &turns in &loop_scenarios {
-            let sabrix_total_ms = (dist.mean_us * turns as f64) / 1000.0;
-            let legacy_total_ms = report.legacy_proxy_per_turn_ms * turns as f64;
-            let saas_total_ms = report.saas_firewall_per_turn_ms * turns as f64;
-            let saved_saas_sec = (saas_total_ms - sabrix_total_ms) / 1000.0;
-
-            tax_table.add_row(vec![
-                Cell::new(format!("{} Turns", turns)).add_attribute(Attribute::Bold),
-                Cell::new(format!("{:.2} ms", sabrix_total_ms)).fg(Color::Green),
-                Cell::new(format!(
-                    "{:.0} ms ({:.2} s)",
-                    legacy_total_ms,
-                    legacy_total_ms / 1000.0
-                ))
-                .fg(Color::Yellow),
-                Cell::new(format!(
-                    "{:.0} ms ({:.2} s)",
-                    saas_total_ms,
-                    saas_total_ms / 1000.0
-                ))
-                .fg(Color::Red),
-                Cell::new(format!("+{:.2} seconds", saved_saas_sec))
-                    .fg(Color::Cyan)
-                    .add_attribute(Attribute::Bold),
-            ]);
-        }
-
-        println!("{}", tax_table);
-        println!();
-
         Self::print_footer();
     }
 
-    /// Formats and renders the live multi-turn comparison between in-process and SaaS firewalls
+    /// Formats and renders comparison between In-Process Sabrix and Remote SaaS Gateways
     pub fn render_comparison(report: &ComparisonReport) {
         println!();
         println!(
@@ -434,7 +246,6 @@ impl Reporter {
         println!("{}", table);
         println!();
 
-        // Executive Summary Box
         println!(
             "{}",
             format!(
@@ -483,7 +294,7 @@ impl Reporter {
         Self::print_footer();
     }
 
-    /// Formats and renders the comprehensive architecture comparison matrix
+    /// Formats and renders the architecture comparison matrix
     pub fn render_comparison_matrix() {
         println!();
         println!(
@@ -586,10 +397,483 @@ impl Reporter {
         Self::print_footer();
     }
 
+    /// Renders the black-box HTTP/SSE benchmark terminal report
+    pub fn render_http_benchmark(report: &HttpBenchmarkReport) {
+        println!();
+        println!(
+            "{}",
+            "╔═══════════════════════════════════════════════════════════════════════════════╗"
+                .bright_cyan()
+        );
+        println!(
+            "{}",
+            "║             ⚡ SABRIX AI PROXY & LLM GATEWAY BENCHMARK REPORT                 ║"
+                .bright_cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            "╚═══════════════════════════════════════════════════════════════════════════════╝"
+                .bright_cyan()
+        );
+        println!();
+
+        let mut meta_table = Table::new();
+        meta_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_content_arrangement(ContentArrangement::Dynamic);
+
+        meta_table.set_header(vec![
+            Cell::new("Configuration").add_attribute(Attribute::Bold),
+            Cell::new("Setting / Value").add_attribute(Attribute::Bold),
+        ]);
+
+        meta_table.add_row(vec![
+            Cell::new("Target Endpoint"),
+            Cell::new(&report.target_url).fg(Color::Cyan).add_attribute(Attribute::Bold),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Test Corpus"),
+            Cell::new(&report.suite_name).fg(Color::Yellow),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Concurrency"),
+            Cell::new(format!("{} parallel workers", report.concurrency)),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Total Requests"),
+            Cell::new(format!("{}", report.total_requests)),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Successful / Failed"),
+            Cell::new(format!(
+                "{} ok / {} failed (HTTP 2xx: {}, 4xx: {}, 5xx: {})",
+                report.successful_requests, report.failed_requests, report.status_2xx, report.status_4xx, report.status_5xx
+            ))
+            .fg(if report.failed_requests == 0 { Color::Green } else { Color::Red }),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Throughput (req/s)"),
+            Cell::new(format!("{:.2} req/sec", report.req_per_sec))
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Streaming Chunks / sec"),
+            Cell::new(format!("{:.2} chunks/sec (Total: {})", report.chunks_per_sec, report.total_chunks))
+                .fg(Color::Cyan),
+        ]);
+        meta_table.add_row(vec![
+            Cell::new("Bandwidth"),
+            Cell::new(format!("{:.2} MB/sec ({:.2} KB total)", report.mb_per_sec, report.total_bytes as f64 / 1024.0)),
+        ]);
+
+        println!("{}", meta_table);
+        println!();
+
+        let mut perc_table = Table::new();
+        perc_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_content_arrangement(ContentArrangement::Dynamic);
+
+        perc_table.set_header(vec![
+            Cell::new("Metric").add_attribute(Attribute::Bold),
+            Cell::new("Min").add_attribute(Attribute::Bold),
+            Cell::new("Mean").add_attribute(Attribute::Bold),
+            Cell::new("p50 (Med)").add_attribute(Attribute::Bold),
+            Cell::new("p90").add_attribute(Attribute::Bold),
+            Cell::new("p95").add_attribute(Attribute::Bold),
+            Cell::new("p99").add_attribute(Attribute::Bold),
+            Cell::new("p99.9").add_attribute(Attribute::Bold),
+            Cell::new("Max").add_attribute(Attribute::Bold),
+            Cell::new("Jitter (σ)").add_attribute(Attribute::Bold),
+        ]);
+
+        let ttft = &report.ttft_stats_ms;
+        perc_table.add_row(vec![
+            Cell::new("Time-to-First-Token (TTFT)").fg(Color::Cyan).add_attribute(Attribute::Bold),
+            Cell::new(format!("{:.2}ms", ttft.min)),
+            Cell::new(format!("{:.2}ms", ttft.mean)),
+            Cell::new(format!("{:.2}ms", ttft.median)).fg(Color::Green).add_attribute(Attribute::Bold),
+            Cell::new(format!("{:.2}ms", ttft.p90)),
+            Cell::new(format!("{:.2}ms", ttft.p95)),
+            Cell::new(format!("{:.2}ms", ttft.p99)).fg(Color::Yellow),
+            Cell::new(format!("{:.2}ms", ttft.p99_9)).fg(Color::Red),
+            Cell::new(format!("{:.2}ms", ttft.max)),
+            Cell::new(format!("±{:.2}ms", ttft.std_dev)),
+        ]);
+
+        let jitter = &report.jitter_stats_ms;
+        if jitter.count > 0 {
+            perc_table.add_row(vec![
+                Cell::new("Inter-Chunk Delta (ITL)").fg(Color::Yellow),
+                Cell::new(format!("{:.2}ms", jitter.min)),
+                Cell::new(format!("{:.2}ms", jitter.mean)),
+                Cell::new(format!("{:.2}ms", jitter.median)),
+                Cell::new(format!("{:.2}ms", jitter.p90)),
+                Cell::new(format!("{:.2}ms", jitter.p95)),
+                Cell::new(format!("{:.2}ms", jitter.p99)),
+                Cell::new(format!("{:.2}ms", jitter.p99_9)),
+                Cell::new(format!("{:.2}ms", jitter.max)),
+                Cell::new(format!("±{:.2}ms", jitter.std_dev)).fg(Color::Magenta),
+            ]);
+        }
+
+        let tot = &report.total_duration_stats_ms;
+        perc_table.add_row(vec![
+            Cell::new("Total Stream Duration").fg(Color::White),
+            Cell::new(format!("{:.2}ms", tot.min)),
+            Cell::new(format!("{:.2}ms", tot.mean)),
+            Cell::new(format!("{:.2}ms", tot.median)),
+            Cell::new(format!("{:.2}ms", tot.p90)),
+            Cell::new(format!("{:.2}ms", tot.p95)),
+            Cell::new(format!("{:.2}ms", tot.p99)),
+            Cell::new(format!("{:.2}ms", tot.p99_9)),
+            Cell::new(format!("{:.2}ms", tot.max)),
+            Cell::new(format!("±{:.2}ms", tot.std_dev)),
+        ]);
+
+        println!("{}", perc_table);
+        println!();
+        Self::print_footer();
+    }
+
+    /// Exports a self-contained, standalone, zero-dependency dark-mode HTML report
+    pub fn export_html_report(report: &HttpBenchmarkReport, file_path: &str) -> Result<()> {
+        let ttft = &report.ttft_stats_ms;
+        let jitter = &report.jitter_stats_ms;
+        let tot = &report.total_duration_stats_ms;
+
+        let max_val = ttft.max.max(1.0);
+        let svg_points = format!(
+            "0,{:.1} 100,{:.1} 200,{:.1} 300,{:.1} 400,{:.1} 500,{:.1}",
+            180.0 - (ttft.min / max_val * 140.0),
+            180.0 - (ttft.median / max_val * 140.0),
+            180.0 - (ttft.p90 / max_val * 140.0),
+            180.0 - (ttft.p95 / max_val * 140.0),
+            180.0 - (ttft.p99 / max_val * 140.0),
+            180.0 - (ttft.p99_9 / max_val * 140.0),
+        );
+
+        let html_content = format!(
+            r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sabrix Benchmark Report — {target_url}</title>
+  <style>
+    :root {{
+      --bg: #070a12;
+      --card-bg: #0d1322;
+      --border: #1e293b;
+      --cyan: #06b6d4;
+      --indigo: #6366f1;
+      --green: #10b981;
+      --yellow: #f59e0b;
+      --red: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      padding: 2rem 1.5rem;
+    }}
+    .container {{ max-width: 1100px; margin: 0 auto; }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }}
+    .brand {{ display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 1.25rem; }}
+    .tag {{
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(6, 182, 212, 0.12);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      color: var(--cyan);
+      font-weight: 600;
+    }}
+    .grid-4 {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2rem; }}
+    .kpi-card {{
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+      overflow: hidden;
+    }}
+    .kpi-card::before {{
+      content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--indigo));
+    }}
+    .kpi-val {{ font-family: var(--font-mono); font-size: 1.85rem; font-weight: 800; color: #ffffff; }}
+    .kpi-lbl {{ font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); }}
+    .kpi-sub {{ font-size: 0.75rem; color: var(--cyan); font-family: var(--font-mono); }}
+
+    .card {{
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+    }}
+    .card-title {{ font-size: 1.1rem; font-weight: 700; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; }}
+
+    table {{ width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 0.85rem; }}
+    th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }}
+    th {{ color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; }}
+    tr:last-child td {{ border-bottom: none; }}
+
+    .chart-container {{
+      background: #050810;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+      margin-top: 1rem;
+    }}
+    .footer {{
+      text-align: center;
+      border-top: 1px solid var(--border);
+      padding-top: 1.5rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    
+    <header class="header">
+      <div class="brand">
+        <span style="color:var(--cyan)">⚡</span>
+        <span>SABRIX<span style="color:var(--cyan)">.AI</span></span>
+        <span class="tag">AI Gateway Benchmark v0.2.0</span>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted)">
+        Target: <code style="color:var(--cyan);font-weight:700">{target_url}</code>
+      </div>
+    </header>
+
+    <!-- 4 High-Impact KPI Cards -->
+    <div class="grid-4">
+      <div class="kpi-card">
+        <div class="kpi-lbl">Throughput</div>
+        <div class="kpi-val" style="color:var(--green)">{req_per_sec:.1} <span style="font-size:1rem">req/s</span></div>
+        <div class="kpi-sub">{chunks_per_sec:.1} chunks/sec</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-lbl">TTFT (p50 Median)</div>
+        <div class="kpi-val" style="color:var(--cyan)">{ttft_p50:.2} <span style="font-size:1rem">ms</span></div>
+        <div class="kpi-sub">Min: {ttft_min:.2}ms</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-lbl">TTFT Tail (p99)</div>
+        <div class="kpi-val" style="color:var(--yellow)">{ttft_p99:.2} <span style="font-size:1rem">ms</span></div>
+        <div class="kpi-sub">p99.9: {ttft_p99_9:.2}ms</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-lbl">Streaming Jitter (σ)</div>
+        <div class="kpi-val" style="color:var(--indigo)">±{jitter_std:.2} <span style="font-size:1rem">ms</span></div>
+        <div class="kpi-sub">Mean ITL: {jitter_mean:.2}ms</div>
+      </div>
+    </div>
+
+    <!-- Latency Percentile Curve (SVG Chart) -->
+    <div class="card">
+      <div class="card-title">
+        <span>📈 Latency Percentile Distribution (p50 → p99.9)</span>
+        <span class="tag">Empirical HDR Distribution</span>
+      </div>
+      <div class="chart-container">
+        <svg viewBox="0 0 500 200" width="100%" height="220" style="overflow:visible">
+          <line x1="0" y1="40" x2="500" y2="40" stroke="#1e293b" stroke-dasharray="4"/>
+          <line x1="0" y1="90" x2="500" y2="90" stroke="#1e293b" stroke-dasharray="4"/>
+          <line x1="0" y1="140" x2="500" y2="140" stroke="#1e293b" stroke-dasharray="4"/>
+          <line x1="0" y1="190" x2="500" y2="190" stroke="#334155"/>
+          
+          <polygon points="0,190 {svg_points} 500,190" fill="rgba(6, 182, 212, 0.12)"/>
+          <polyline fill="none" stroke="#06b6d4" stroke-width="3" points="{svg_points}"/>
+
+          <text x="0" y="210" fill="#94a3b8" font-size="11" font-family="monospace">Min</text>
+          <text x="100" y="210" fill="#94a3b8" font-size="11" font-family="monospace">p50</text>
+          <text x="200" y="210" fill="#94a3b8" font-size="11" font-family="monospace">p90</text>
+          <text x="300" y="210" fill="#94a3b8" font-size="11" font-family="monospace">p95</text>
+          <text x="400" y="210" fill="#94a3b8" font-size="11" font-family="monospace">p99</text>
+          <text x="470" y="210" fill="#94a3b8" font-size="11" font-family="monospace">p99.9</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Detailed Metrics Table -->
+    <div class="card">
+      <div class="card-title">
+        <span>📊 Complete Percentile Latency Matrix</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Metric Layer</th>
+            <th>Min</th>
+            <th>Mean</th>
+            <th>p50 (Median)</th>
+            <th>p90</th>
+            <th>p95</th>
+            <th>p99</th>
+            <th>p99.9</th>
+            <th>Max</th>
+            <th>Std Dev (σ)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="color:var(--cyan);font-weight:700">Time-to-First-Token (TTFT)</td>
+            <td>{ttft_min:.2}ms</td>
+            <td>{ttft_mean:.2}ms</td>
+            <td style="color:var(--green);font-weight:700">{ttft_p50:.2}ms</td>
+            <td>{ttft_p90:.2}ms</td>
+            <td>{ttft_p95:.2}ms</td>
+            <td style="color:var(--yellow);font-weight:700">{ttft_p99:.2}ms</td>
+            <td style="color:var(--red);font-weight:700">{ttft_p99_9:.2}ms</td>
+            <td>{ttft_max:.2}ms</td>
+            <td>±{ttft_std:.2}ms</td>
+          </tr>
+          <tr>
+            <td style="color:var(--yellow)">Inter-Token Jitter (ITL)</td>
+            <td>{jit_min:.2}ms</td>
+            <td>{jit_mean:.2}ms</td>
+            <td>{jit_p50:.2}ms</td>
+            <td>{jit_p90:.2}ms</td>
+            <td>{jit_p95:.2}ms</td>
+            <td>{jit_p99:.2}ms</td>
+            <td>{jit_p99_9:.2}ms</td>
+            <td>{jit_max:.2}ms</td>
+            <td style="color:var(--indigo);font-weight:700">±{jitter_std:.2}ms</td>
+          </tr>
+          <tr>
+            <td style="color:#ffffff">Total Stream Duration</td>
+            <td>{tot_min:.2}ms</td>
+            <td>{tot_mean:.2}ms</td>
+            <td>{tot_p50:.2}ms</td>
+            <td>{tot_p90:.2}ms</td>
+            <td>{tot_p95:.2}ms</td>
+            <td>{tot_p99:.2}ms</td>
+            <td>{tot_p99_9:.2}ms</td>
+            <td>{tot_max:.2}ms</td>
+            <td>±{tot_std:.2}ms</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Execution Environment Metadata -->
+    <div class="card">
+      <div class="card-title">
+        <span>⚙️ Benchmark Execution Environment</span>
+      </div>
+      <table>
+        <tbody>
+          <tr>
+            <td style="color:var(--text-muted)">Target URL</td>
+            <td><code>{target_url}</code></td>
+            <td style="color:var(--text-muted)">Benchmark Suite</td>
+            <td><code>{suite_name}</code></td>
+          </tr>
+          <tr>
+            <td style="color:var(--text-muted)">Concurrency Pool</td>
+            <td><strong>{concurrency} workers</strong></td>
+            <td style="color:var(--text-muted)">Total Requests</td>
+            <td><strong>{total_requests} requests</strong></td>
+          </tr>
+          <tr>
+            <td style="color:var(--text-muted)">HTTP Status Distribution</td>
+            <td><span style="color:var(--green)">{status_2xx} (2xx OK)</span> · <span style="color:var(--yellow)">{status_4xx} (4xx)</span> · <span style="color:var(--red)">{status_5xx} (5xx)</span></td>
+            <td style="color:var(--text-muted)">Total Stream Duration</td>
+            <td><strong>{total_duration:.2} seconds</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <footer class="footer">
+      Generated by <strong>sabrix-bench v0.2.0</strong> · Zero-Egress In-VPC Autonomous Ingress Governance · <a href="https://sabrix.ai" target="_blank" style="color:var(--cyan);text-decoration:none">https://sabrix.ai</a>
+    </footer>
+
+  </div>
+</body>
+</html>"##,
+            target_url = report.target_url,
+            suite_name = report.suite_name,
+            concurrency = report.concurrency,
+            total_requests = report.total_requests,
+            req_per_sec = report.req_per_sec,
+            chunks_per_sec = report.chunks_per_sec,
+            status_2xx = report.status_2xx,
+            status_4xx = report.status_4xx,
+            status_5xx = report.status_5xx,
+            total_duration = report.total_duration_secs,
+            ttft_min = ttft.min,
+            ttft_mean = ttft.mean,
+            ttft_p50 = ttft.median,
+            ttft_p90 = ttft.p90,
+            ttft_p95 = ttft.p95,
+            ttft_p99 = ttft.p99,
+            ttft_p99_9 = ttft.p99_9,
+            ttft_max = ttft.max,
+            ttft_std = ttft.std_dev,
+            jit_min = jitter.min,
+            jit_mean = jitter.mean,
+            jit_p50 = jitter.median,
+            jit_p90 = jitter.p90,
+            jit_p95 = jitter.p95,
+            jit_p99 = jitter.p99,
+            jit_p99_9 = jitter.p99_9,
+            jit_max = jitter.max,
+            jitter_mean = jitter.mean,
+            jitter_std = jitter.std_dev,
+            tot_min = tot.min,
+            tot_mean = tot.mean,
+            tot_p50 = tot.median,
+            tot_p90 = tot.p90,
+            tot_p95 = tot.p95,
+            tot_p99 = tot.p99,
+            tot_p99_9 = tot.p99_9,
+            tot_max = tot.max,
+            tot_std = tot.std_dev,
+            svg_points = svg_points,
+        );
+
+        let mut file = File::create(file_path)
+            .with_context(|| format!("Failed to create HTML report file at {}", file_path))?;
+        file.write_all(html_content.as_bytes())
+            .with_context(|| format!("Failed to write HTML report content to {}", file_path))?;
+
+        Ok(())
+    }
+
     pub fn print_footer() {
-        println!("{}", "─".repeat(80).dimmed());
+        println!("{}", "-".repeat(80).dimmed());
         println!("{} {}", "🚀".bold(), Self::CTA_FOOTER.bright_cyan().bold());
-        println!("{}", "─".repeat(80).dimmed());
+        println!("{}", "-".repeat(80).dimmed());
         println!();
     }
 }

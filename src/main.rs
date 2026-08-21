@@ -5,20 +5,25 @@ use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 mod benchmark;
+mod client;
 mod inspector;
+mod metrics;
 mod reporter;
+mod suites;
 
 use benchmark::{AgentBenchmark, BenchmarkConfig};
+use client::{BenchmarkClient, BenchmarkOptions};
 use inspector::McpInspector;
 use reporter::Reporter;
+use suites::BenchmarkSuite;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "sabrix-bench",
     author = "Chandradeep <chandradeep@sabrix.ai>",
     version,
-    about = "⚡ Ultra-fast developer CLI & benchmark tool for Model Context Protocol (MCP) inspection and agent latency profiling.",
-    long_about = "sabrix-bench is a lightweight, zero-bloat developer utility for inspecting MCP JSON-RPC messages, flagging dangerous tool calls, and benchmarking per-turn latency overhead across agent loops."
+    about = "⚡ Fast vendor-neutral benchmarking harness for AI proxies, firewalls, and LLM gateways.",
+    long_about = "sabrix-bench is a lightweight, vendor-neutral benchmarking utility (the 'wrk / hyperfine for AI gateways') measuring pure client-visible TTFT, inter-token jitter, streaming tail latencies, and high-concurrency throughput across any proxy or LLM endpoint."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,6 +32,45 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Benchmark an external AI proxy, LLM gateway, or target URL with live HTTP/SSE streaming
+    Run {
+        /// Target endpoint URL (e.g. http://localhost:8080/v1/chat/completions)
+        #[arg(short, long, value_name = "URL")]
+        target: String,
+
+        /// Number of concurrent workers (1 to 500)
+        #[arg(short, long, default_value_t = 10)]
+        concurrency: usize,
+
+        /// Total number of requests to dispatch
+        #[arg(short, long, default_value_t = 100)]
+        requests: usize,
+
+        /// Built-in benchmark test suite: 'rag', 'owasp', or 'simple'
+        #[arg(short, long, default_value = "simple")]
+        suite: String,
+
+        /// Custom JSON request payload file (overrides built-in suite)
+        #[arg(short, long, value_name = "FILE")]
+        payload: Option<PathBuf>,
+
+        /// Enable chunk-by-chunk Server-Sent Events (SSE) streaming evaluation
+        #[arg(long, default_value_t = true)]
+        stream: bool,
+
+        /// Custom HTTP request headers (e.g. -H "Authorization: Bearer sk-test")
+        #[arg(short = 'H', long = "header", value_name = "KEY:VAL")]
+        headers: Vec<String>,
+
+        /// Path to export standalone, self-contained dark-mode HTML report
+        #[arg(long, value_name = "HTML_PATH")]
+        export_html: Option<PathBuf>,
+
+        /// Path to export raw machine-readable JSON metrics
+        #[arg(long, value_name = "JSON_PATH")]
+        export_json: Option<PathBuf>,
+    },
+
     /// Inspect MCP JSON-RPC 2.0 tool-calls and flag security risks in microseconds
     Trace {
         /// File containing MCP JSON-RPC message (reads from stdin if not specified)
@@ -93,6 +137,97 @@ async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Run {
+            target,
+            concurrency,
+            requests,
+            suite,
+            payload,
+            stream,
+            headers,
+            export_html,
+            export_json,
+        } => {
+            let payloads = if let Some(ref path) = payload {
+                let content = std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read payload file: {}", path.display()))?;
+                let val: serde_json::Value = serde_json::from_str(&content)
+                    .context("Failed to parse custom payload as valid JSON")?;
+                if let Some(arr) = val.as_array() {
+                    arr.clone()
+                } else {
+                    vec![val]
+                }
+            } else {
+                let suite_enum = BenchmarkSuite::from_str(&suite).unwrap_or_else(|| {
+                    eprintln!(
+                        "{} Unknown suite '{}'. Falling back to 'simple'. (Available: 'rag', 'owasp', 'simple')",
+                        "Warning:".yellow().bold(),
+                        suite
+                    );
+                    BenchmarkSuite::Simple
+                });
+                suite_enum.load_payloads()?
+            };
+
+            let suite_display_name = if payload.is_some() {
+                "Custom User Payload File".to_string()
+            } else {
+                BenchmarkSuite::from_str(&suite)
+                    .map(|s| s.name().to_string())
+                    .unwrap_or_else(|| "Simple Baseline Suite".to_string())
+            };
+
+            println!();
+            println!(
+                "{} Dispatching {} requests (concurrency: {}) against {} ...",
+                "⚡ [SABRIX-BENCH]".bright_cyan().bold(),
+                requests,
+                concurrency,
+                target.bright_yellow().bold()
+            );
+            println!("   Corpus: {}", suite_display_name.white().bold());
+            println!();
+
+            let options = BenchmarkOptions {
+                target_url: target.clone(),
+                suite_name: suite_display_name,
+                concurrency: concurrency.max(1),
+                total_requests: requests.max(1),
+                stream_mode: stream,
+                custom_headers: headers,
+                payloads,
+            };
+
+            let report = BenchmarkClient::execute(options).await?;
+
+            Reporter::render_http_benchmark(&report);
+
+            if let Some(html_path) = export_html {
+                let path_str = html_path.to_string_lossy();
+                Reporter::export_html_report(&report, &path_str)?;
+                println!(
+                    "{} Standalone HTML report exported to: {}",
+                    "✓ [SAVED]".green().bold(),
+                    path_str.bright_cyan().bold()
+                );
+                println!();
+            }
+
+            if let Some(json_path) = export_json {
+                let path_str = json_path.to_string_lossy();
+                let json_str = serde_json::to_string_pretty(&report)?;
+                std::fs::write(&json_path, json_str)
+                    .with_context(|| format!("Failed to write JSON report to {}", path_str))?;
+                println!(
+                    "{} Machine-readable JSON metrics exported to: {}",
+                    "✓ [SAVED]".green().bold(),
+                    path_str.bright_cyan().bold()
+                );
+                println!();
+            }
+        }
+
         Commands::Trace {
             input,
             payload,
@@ -109,7 +244,6 @@ async fn run_cli() -> Result<()> {
                 std::fs::read_to_string(&path)
                     .with_context(|| format!("Failed to read input file: {}", path.display()))?
             } else {
-                // Read from stdin
                 let mut buffer = String::new();
                 let mut stdin = io::stdin();
 

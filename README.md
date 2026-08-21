@@ -5,20 +5,19 @@
 
 # sabrix-bench ⚡
 
-> Ultra-fast, zero-bloat developer CLI and benchmark harness for Model Context Protocol (MCP) traffic inspection and agent loop latency profiling.
+> **The "wrk / hyperfine for AI proxies and LLM gateways"** — A fast, vendor-neutral benchmarking harness and Model Context Protocol (MCP) traffic inspector in pure safe Rust.
 
 ---
 
-## 🎯 The Problem
+## 🎯 What is `sabrix-bench`?
 
-Developers building autonomous AI agents locally lack visibility into raw **Model Context Protocol (MCP)** JSON-RPC tool traffic and have no lightweight way to measure per-turn serialization and proxy latency overhead.
+`sabrix-bench` is an open-source, vendor-neutral benchmarking tool designed to measure pure client-visible HTTP & Server-Sent Events (SSE) streaming metrics against **any** AI proxy, firewall, or LLM gateway (LiteLLM, Cloudflare AI Gateway, Portkey, vLLM, or Sabrix).
 
-Legacy approaches introduce massive performance and security taxes:
-- **Legacy Python / Node Proxies:** Add **30ms – 50ms** of serialization and runtime tax per tool call.
-- **SaaS AI Firewalls:** Incur **100ms – 250ms** of WAN network latency, TLS handshakes, and third-party cloud data egress per turn.
-- Over a **30-turn agent loop**, legacy firewalls add **3.6+ seconds of dead wait time** and leak raw database queries and internal system commands outside your perimeter.
-
-`sabrix-bench` gives you real-time visibility into your local MCP tool calls and benchmarks your agent loops in **microseconds ($< 2\ \mu\text{s}$)** with **zero network egress**.
+Traditional web benchmark tools (wrk, vegeta) only measure total request duration ($t_{\text{total}}$), which is dominated by upstream LLM token generation. `sabrix-bench` inspects what users actually experience:
+* **Time-to-First-Token (TTFT / Chunk 0 latency)** under high concurrency ($1$ to $500$ parallel connections).
+* **Inter-Token Latency (ITL) & Streaming Jitter** ($\sigma$) to expose proxy chunk buffering and stream degradation.
+* **HDR Latency Percentiles** ($p50$, $p90$, $p95$, $p99$, $p99.9$).
+* **Standalone Self-Contained HTML Reports** (`--export-html report.html`) with embedded interactive SVG percentile curves.
 
 ---
 
@@ -30,124 +29,97 @@ Legacy approaches introduce massive performance and security taxes:
 cargo install sabrix-bench
 ```
 
-### Or Install via Git / Source
+### Or Install via Git
 
 ```bash
 cargo install --git https://github.com/Pro-Kla/sabrix-bench
 ```
 
-### Or Build & Install from Local Source
+---
+
+## 🛠️ CLI Usage
+
+### 1. `sabrix-bench run` — Live HTTP/SSE Gateway Benchmark
+
+Benchmark any external endpoint with concurrent workers and streaming SSE chunk evaluation:
 
 ```bash
-# Clone the repository and install the binary
-git clone https://github.com/Pro-Kla/sabrix-bench.git
-cd sabrix-bench
-cargo install --path .
-```
+# Benchmark local gateway with 50 parallel connections
+sabrix-bench run --target http://localhost:8080/v1/chat/completions --concurrency 50 --requests 500
 
-Or run directly with Cargo:
+# Benchmark with embedded Enterprise RAG test corpus (50 prompts)
+sabrix-bench run --target http://localhost:8080/v1/chat/completions --suite rag --concurrency 25 --requests 100
 
-```bash
-cargo run -- --help
+# Benchmark with OWASP LLM Top-10 & safety test suite
+sabrix-bench run --target http://localhost:8080/v1/chat/completions --suite owasp --concurrency 20
+
+# Export standalone zero-dependency dark-mode HTML report & JSON telemetry
+sabrix-bench run \
+  --target http://localhost:8080/v1/chat/completions \
+  --concurrency 50 \
+  --requests 1000 \
+  --export-html benchmark_report.html \
+  --export-json metrics.json
+
+# Pass custom authentication or routing headers
+sabrix-bench run \
+  --target https://api.openai.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-..." \
+  --concurrency 10 \
+  --requests 50
 ```
 
 ---
 
-## 🛠️ CLI Usage & Subcommands
+### 2. `sabrix-bench trace` — Real-Time MCP Tool-Call Security Inspector
 
-### 1. `sabrix-bench trace` — Real-Time MCP Security Inspector
+Inspect JSON-RPC 2.0 requests (`tools/call`, `resources/read`) in sub-microsecond ($< 1\ \mu\text{s}$) latency and detect security violations (destructive shell commands, SQL mutations, credential leaks, path traversal):
 
-Inspect JSON-RPC 2.0 requests (`tools/call`, `resources/read`, `tools/list`) and flag dangerous tool mutations (destructive shell commands, SQL injections, leaked credentials).
-
-#### Run Built-in Demo Scenarios:
 ```bash
+# Run built-in demo scenarios
 sabrix-bench trace --demo
-```
 
-#### Inspect from Inline JSON Payload:
-```bash
+# Inspect inline JSON payload
 sabrix-bench trace -p '{
   "jsonrpc": "2.0",
   "id": 1,
   "method": "tools/call",
   "params": {
-    "name": "database_query",
-    "arguments": { "sql": "DROP TABLE users; --" }
+    "name": "bash_exec",
+    "arguments": { "cmd": "rm -rf /data/customers" }
   }
 }'
-```
 
-#### Pipe from Stdin:
-```bash
-cat mcp_message.json | sabrix-bench trace
-```
-
----
-
-### 2. `sabrix-bench bench` — Multi-Turn Agent Loop Benchmark
-
-Simulate multi-turn autonomous agent loops to measure local parsing overhead, memory serialization, and latency percentiles ($p50$, $p95$, $p99$).
-
-```bash
-# Run a 30-turn benchmark with real-time progress
-sabrix-bench bench --turns 30
-
-# Benchmark larger context payloads (10x scale)
-sabrix-bench bench --turns 50 --scale 10
-
-# Output machine-readable JSON for CI/CD pipelines
-sabrix-bench bench --turns 20 --json
+# Pipe from stdin
+cat mcp_payload.json | sabrix-bench trace
 ```
 
 ---
 
-### 3. `sabrix-bench compare` — Live Multi-Turn Latency Comparison
+### 3. `sabrix-bench compare` — Multi-Turn Agent Latency Simulator
 
-Run an empirical, turn-by-turn benchmark measuring safe-Rust in-process execution on your CPU against the WAN network overhead of remote SaaS AI firewalls (~120 ms).
+Calculate compounding latency penalties across multi-turn autonomous agent loops ($20$–$50$ turns) comparing In-Process safe-Rust evaluation vs. remote SaaS network roundtrips:
 
 ```bash
-# Run dynamic 30-turn live latency comparison
+# Compare a 30-turn agent loop against a 120ms SaaS network baseline
 sabrix-bench compare --turns 30
 
-# Output machine-readable comparison JSON for CI/CD pipelines
-sabrix-bench compare --turns 20 --json
-
-# View full static architectural comparison matrix
+# Show architectural comparison matrix
 sabrix-bench compare --matrix
 ```
 
 ---
 
-## 📊 Benchmark & Latency Tax Breakdown
+## 📊 Public Test Corpora Included
 
-| Layer / Architecture | Per-Turn Latency | 30-Turn Loop Delay | Egress & Privacy | Memory Footprint |
-| :--- | :--- | :--- | :--- | :--- |
-| **Sabrix In-VPC Engine** | **`< 2 µs`** (0.002 ms) | **`< 0.06 ms`** | **100% In-VPC (Zero Egress)** | **`< 15 MB`** |
-| **Legacy Python / Node Proxy** | `35.0 ms` | `+1.05 seconds` | Local Cluster | `150 MB – 400 MB` |
-| **SaaS AI Firewall** | `120.0 ms` | `+3.60 seconds` | Full Payload Egress | N/A (Cloud SaaS) |
-
----
-
-## 🛡️ Built-in Risk Checks
-
-`sabrix-bench` evaluates deterministic security rules locally in sub-microsecond time:
-- **`MCP-SEC-001`**: Destructive Filesystem Operations (`rm -rf`, `mkfs`, `dd`, `chmod 777`)
-- **`MCP-SEC-002`**: Remote Code Execution / Reverse Shells (`curl | bash`, `nc -e`, `/dev/tcp/`)
-- **`MCP-SEC-003`**: Destructive SQL Mutations & Injections (`DROP TABLE`, `TRUNCATE`, `DELETE FROM`, `WHERE 1=1`)
-- **`MCP-SEC-004-007`**: Leaked API Keys & Secrets (OpenAI `sk-`, GitHub `ghp_`, AWS `AKIA`, PEM Private Keys)
-- **`MCP-SEC-008`**: Sensitive Path Egress (`/etc/passwd`, `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`)
-- **`MCP-SEC-009`**: Unconstrained Arbitrary Execution Tool Invocations
+`sabrix-bench` embeds standard test datasets directly inside the compiled binary:
+* `--suite simple`: 10 low-overhead baseline health and connectivity prompts.
+* `--suite rag`: 50 enterprise RAG prompts of varying lengths ($1\text{KB}$ to $32\text{KB}$) for saturation and throughput benchmarking.
+* `--suite owasp`: 50 standardized security probes (prompt injection, sensitive path reads, secret leakage, SQL drops) and benign control prompts.
+* `--payload <file.json>`: Custom user JSON request payloads.
 
 ---
 
-## 🌟 Deploying to Production?
+## 🛡️ License
 
-Enforce zero-egress In-VPC MCP security with millisecond-grade deterministic policy control:
-
-👉 **[Deploy Sabrix In-VPC Gateway](https://sabrix.ai)**
-
----
-
-## 📜 License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+Dual licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE).
